@@ -7,6 +7,7 @@ using CounterStrikeSharp.API.Core.Attributes;
 using CounterStrikeSharp.API.Core.Attributes.Registration;
 
 using CounterStrikeSharp.API.Modules.Commands;
+using CounterStrikeSharp.API.Modules.Menu;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
@@ -34,7 +35,9 @@ public class StopSound : BasePlugin
 
 
     private string _dbPath = null!;
-
+    // --- NEW: Dictionary to track last menu open time per player ---
+    private readonly Dictionary<ulong, DateTime> _lastMenuOpenTime = new();
+    private readonly TimeSpan _menuOpenCooldown = TimeSpan.FromMilliseconds(500); // Cooldown of 0.5 seconds
 
     public override void Load(bool hotReload)
     {
@@ -57,6 +60,12 @@ public class StopSound : BasePlugin
                 Logger.LogError(ex, "Error applying database migrations"); // Changed log message slightly
             }
         });
+
+        // --- Register Listeners ---
+        // Listen for 'say' and 'say_team' commands to catch chat messages
+        RegisterListener<Listeners.OnMapStart>(name => { /* Can do map specific things here */ });
+        AddCommandListener("say", Listener_SayChat);          // Hook public chat
+        AddCommandListener("say_team", Listener_SayChat);     // Hook team chat
     }
 
     [GameEventHandler] HookResult OnPlayerConnect(EventPlayerConnectFull @event, GameEventInfo info)
@@ -138,7 +147,7 @@ public class StopSound : BasePlugin
     }
 
 
-
+    
 
     [ConsoleCommand("css_kills", "Get count of kills for a player")]
     public void OnKillsCommand(CCSPlayerController? player, CommandInfo commandInfo)
@@ -174,6 +183,134 @@ public class StopSound : BasePlugin
 
             // Print the result - must run on game thread
             Server.NextFrame(() => { player.PrintToChat($"Kills: {kills}"); });
+        });
+    }
+
+    // --- Updated Listener ---
+    private HookResult Listener_SayChat(CCSPlayerController? player, CommandInfo commandInfo)
+    {
+        if (player == null || !player.IsValid || player.IsBot)
+        {
+            return HookResult.Continue;
+        }
+
+        // Using GetArg is generally preferred now
+        string? commandTrigger = (commandInfo.ArgCount > 1) ? commandInfo.GetArg(1)?.Trim() : null;
+
+        // Log received command attempt (optional, good for debug)
+        // Logger.LogInformation($"[ChatListener] Player: {player.PlayerName}, Arg1: '{commandTrigger}'");
+
+        if (commandTrigger != null && commandTrigger.Equals("!menu", StringComparison.OrdinalIgnoreCase))
+        {
+            Logger.LogInformation($"[ChatListener] '!menu' command attempt recognized for player {player.PlayerName}.");
+
+            // --- Check Cooldown ---
+            ulong steamId = player.SteamID; // Use SteamID which is reliable
+            if (_lastMenuOpenTime.TryGetValue(steamId, out DateTime lastOpen) && DateTime.UtcNow < lastOpen + _menuOpenCooldown)
+            {
+                Logger.LogInformation($"[Cooldown] Menu open throttled for player {player.PlayerName} (SteamID: {steamId}).");
+                // Return Handled to prevent the "!menu" text appearing if throttled.
+                return HookResult.Handled;
+            }
+
+            // --- Update Last Open Time ---
+            _lastMenuOpenTime[steamId] = DateTime.UtcNow;
+            Logger.LogInformation($"[Cooldown] Updated last menu open time for player {player.PlayerName} (SteamID: {steamId}).");
+
+
+            // --- Open the Menu ---
+            OpenMainMenu(player); // Call your existing menu function
+
+            // --- VERY IMPORTANT: Stop the original chat command ---
+            // If we successfully handle '!menu', stop the "say" or "say_team" command
+            // from proceeding further (e.g., prevent showing "!menu" in chat).
+            return HookResult.Handled;
+        }
+
+        // If it wasn't our command, let the chat message proceed normally
+        return HookResult.Continue;
+    }
+
+    // --- Updated Method to Create and Open the Menu (No changes needed here for flicker) ---
+    private void OpenMainMenu(CCSPlayerController player)
+    {
+        if (player == null || !player.IsValid) return;
+
+        var menu = new CenterHtmlMenu("Main Menu");
+        menu.AddMenuOption("Show My Kills", HandleMenuSelection);
+        menu.AddMenuOption("Placeholder Option 2", HandleMenuSelection);
+        menu.AddMenuOption("Close Menu", HandleMenuSelection);
+
+        MenuManager.OpenCenterHtmlMenu(this, player, menu);
+        Logger.LogInformation($"[Menu] Opened main menu for {player.PlayerName}");
+    }
+
+    // --- Menu Selection Handler (Remains the same - adding logging) ---
+    private void HandleMenuSelection(CCSPlayerController player, ChatMenuOption option)
+    {
+        if (player == null || !player.IsValid) return;
+
+        Logger.LogInformation($"[Menu] Player {player.PlayerName} selected option: {option.Text}"); // Log selection
+
+        switch (option.Text)
+        {
+            case "Show My Kills":
+                _ = ShowPlayerKillsAsync(player);
+                break;
+            // ... other cases
+            default:
+                Logger.LogWarning($"[Menu] Unhandled menu option selected by {player.PlayerName}: {option.Text}");
+                break;
+        }
+    }
+
+    // Other methods (Load, OnPlayerConnect, OnPlayerKilled, ShowPlayerKillsAsync, DBContext, etc.) remain the same...
+
+
+    // --- REFACTORED: Async Method to Get and Show Kills ---
+    private async Task ShowPlayerKillsAsync(CCSPlayerController player)
+    {
+        if (player == null || player.AuthorizedSteamID == null)
+        {
+            // This case should ideally not happen if called correctly, but check anyway
+            Logger.LogWarning("ShowPlayerKillsAsync called with invalid player object.");
+            return;
+        }
+
+        var steamId = player.AuthorizedSteamID.SteamId64;
+        int kills = 0;
+        bool errorOccurred = false;
+
+        try
+        {
+            await using var dbContext = new PluginDbContext(_dbPath);
+            var playerRecord = await dbContext.Players
+                                           .AsNoTracking() // Good for read-only
+                                           .FirstOrDefaultAsync(p => p.SteamId == steamId);
+            kills = playerRecord?.Kills ?? 0;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error retrieving player kills for SteamID {SteamId}", steamId);
+            errorOccurred = true;
+        }
+
+        // IMPORTANT: Interaction with player (PrintToChat) must happen on the main game thread.
+        // Use Server.NextFrame or AddTimer to schedule it.
+        Server.NextFrame(() =>
+        {
+            // Double check player validity *again* before printing, as they might disconnect
+            // between the async operation finishing and the next frame executing.
+            if (player == null || !player.IsValid) return;
+
+            if (errorOccurred)
+            {
+                player.PrintToChat("Sorry, there was an error retrieving your kills data.");
+            }
+            else
+            {
+                player.PrintToChat($"Your Kills: {kills}");
+            }
         });
     }
 

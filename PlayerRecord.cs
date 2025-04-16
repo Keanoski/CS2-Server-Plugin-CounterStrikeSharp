@@ -1,7 +1,7 @@
 ﻿using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 
-[Table("players")] // Optional if class name matches table name convention
+[Table("players")] 
 public class PlayerRecord
 {
     [Key] // Marks steamid as the primary key
