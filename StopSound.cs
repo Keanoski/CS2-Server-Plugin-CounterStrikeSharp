@@ -37,13 +37,11 @@ public class StopSound : BasePlugin
 
 
     public override void Load(bool hotReload)
-
     {
-
         _dbPath = Path.Join(ModuleDirectory, "database.db");
         Logger.LogInformation("Loading database from {Path}", _dbPath);
 
-        // Ensure database and table exist (can be done via migrations)
+        // Ensure database and table exist using Migrations
         // Run in a separate thread to avoid blocking the main thread
         Task.Run(async () =>
         {
@@ -55,10 +53,45 @@ public class StopSound : BasePlugin
             }
             catch (Exception ex)
             {
-                Logger.LogError(ex, "Error ensuring database schema");
+                // Log any errors during migration
+                Logger.LogError(ex, "Error applying database migrations"); // Changed log message slightly
+            }
+        });
+    }
+
+    [GameEventHandler] HookResult OnPlayerConnect(EventPlayerConnectFull @event, GameEventInfo info)
+    {
+        if (@event.Userid == null) return HookResult.Continue;
+
+        var steamId = @event.Userid.AuthorizedSteamID?.SteamId64;
+        if (steamId == null) return HookResult.Continue;
+
+        // Run in a separate thread
+        Task.Run(async () =>
+        {
+            try
+            {
+                // Create a DbContext instance for this operation
+                await using var dbContext = new PluginDbContext(_dbPath);
+
+                // Check if the player already exists in the database
+                var playerRecord = await dbContext.Players.FindAsync(steamId.Value);
+                if (playerRecord == null)
+                {
+                    // Player doesn't exist, add new record
+                    playerRecord = new PlayerRecord { SteamId = steamId.Value, Kills = 0 };
+                    dbContext.Players.Add(playerRecord);
+                    await dbContext.SaveChangesAsync(); // Persist changes to the database
+                }
+            }
+            catch (Exception ex)
+            {
+                // It's CRUCIAL to log errors in background tasks
+                Logger.LogError(ex, "Error adding player to database for SteamID {SteamId}", steamId);
             }
         });
 
+        return HookResult.Continue;
     }
 
     [GameEventHandler]
