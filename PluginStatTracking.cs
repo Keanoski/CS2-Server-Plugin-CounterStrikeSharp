@@ -14,13 +14,13 @@ using static CounterStrikeSharp.API.Core.Listeners;
 
 
 
-namespace StopSound;
+namespace PluginStatTracking;
 
 
 
 [MinimumApiVersion(80)]
 
-public class StopSound : BasePlugin
+public class PluginStatTracking : BasePlugin
 
 {
 
@@ -112,6 +112,7 @@ public class StopSound : BasePlugin
         if (@event.Userid == null) return HookResult.Continue;
 
         var steamId = @event.Userid.AuthorizedSteamID?.SteamId64;
+        var playerName = @event.Userid.PlayerName;
         if (steamId == null) return HookResult.Continue;
 
         // Run in a separate thread
@@ -127,7 +128,7 @@ public class StopSound : BasePlugin
                 if (playerRecord == null)
                 {
                     // Player doesn't exist, add new record
-                    playerRecord = new PlayerRecord { SteamId = steamId.Value, Kills = 0 };
+                    playerRecord = new PlayerRecord { SteamId = steamId.Value, PlayerName = playerName, Kills = 0 };
                     dbContext.Players.Add(playerRecord);
                     await dbContext.SaveChangesAsync(); // Persist changes to the database
                 }
@@ -149,6 +150,7 @@ public class StopSound : BasePlugin
         // We know @event.Attacker is not null here because of the 'if' check above.
         // Use the null-forgiving operator (!) on @event.Attacker.
         var steamId = @event.Attacker!.AuthorizedSteamID?.SteamId64;
+        var playerName = @event.Attacker.PlayerName;
         if (steamId == null) return HookResult.Continue;
 
         // Run in a separate thread
@@ -163,7 +165,7 @@ public class StopSound : BasePlugin
                 if (playerRecord == null)
                 {
                     // Player doesn't exist, add new record
-                    playerRecord = new PlayerRecord { SteamId = steamId.Value, Kills = 1 };
+                    playerRecord = new PlayerRecord { SteamId = steamId.Value, PlayerName = playerName, Kills = 1 };
                     dbContext.Players.Add(playerRecord);
                 }
                 else

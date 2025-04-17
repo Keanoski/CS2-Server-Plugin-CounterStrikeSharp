@@ -6,10 +6,10 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
 
-namespace StopSound.Migrations
+namespace PluginStatTracking.Migrations
 {
     [DbContext(typeof(PluginDbContext))]
-    [Migration("20250415223826_InitialCreate")]
+    [Migration("20250417010733_InitialCreate")]
     partial class InitialCreate
     {
         /// <inheritdoc />
@@ -27,6 +27,10 @@ namespace StopSound.Migrations
                     b.Property<int>("Kills")
                         .HasColumnType("INTEGER")
                         .HasColumnName("kills");
+
+                    b.Property<string>("PlayerName")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("playername");
 
                     b.HasKey("SteamId");
 

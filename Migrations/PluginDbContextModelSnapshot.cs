@@ -5,7 +5,7 @@ using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 #nullable disable
 
-namespace StopSound.Migrations
+namespace PluginStatTracking.Migrations
 {
     [DbContext(typeof(PluginDbContext))]
     partial class PluginDbContextModelSnapshot : ModelSnapshot
@@ -24,6 +24,10 @@ namespace StopSound.Migrations
                     b.Property<int>("Kills")
                         .HasColumnType("INTEGER")
                         .HasColumnName("kills");
+
+                    b.Property<string>("PlayerName")
+                        .HasColumnType("TEXT")
+                        .HasColumnName("playername");
 
                     b.HasKey("SteamId");
 

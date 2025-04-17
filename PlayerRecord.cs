@@ -9,6 +9,9 @@ public class PlayerRecord
     [DatabaseGenerated(DatabaseGeneratedOption.None)] // Important for non-auto-incrementing keys
     public ulong SteamId { get; set; }
 
+    [Column("playername")] // Maps property to the specific column name
+    public string? PlayerName { get; set; }
+
     [Column("kills")]
     public int Kills { get; set; }
 }

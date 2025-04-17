@@ -2,7 +2,7 @@
 
 #nullable disable
 
-namespace StopSound.Migrations
+namespace PluginStatTracking.Migrations
 {
     /// <inheritdoc />
     public partial class InitialCreate : Migration
@@ -15,6 +15,7 @@ namespace StopSound.Migrations
                 columns: table => new
                 {
                     steamid = table.Column<ulong>(type: "INTEGER", nullable: false),
+                    playername = table.Column<string>(type: "TEXT", nullable: true),
                     kills = table.Column<int>(type: "INTEGER", nullable: false)
                 },
                 constraints: table =>
