@@ -10,6 +10,7 @@ using CounterStrikeSharp.API.Modules.Commands;
 using CounterStrikeSharp.API.Modules.Menu;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using static CounterStrikeSharp.API.Core.Listeners;
 
 
 
@@ -32,17 +33,16 @@ public class StopSound : BasePlugin
     public override string ModuleDescription => "A plugin that reads and writes from the database.";
 
 
-
-
     private string _dbPath = null!;
-    // --- NEW: Dictionary to track last menu open time per player ---
-    private readonly Dictionary<ulong, DateTime> _lastMenuOpenTime = new();
-    private readonly TimeSpan _menuOpenCooldown = TimeSpan.FromMilliseconds(500); // Cooldown of 0.5 seconds
+    private CCSGameRules? _gameRules; // used for menu flicker fix
 
     public override void Load(bool hotReload)
     {
         _dbPath = Path.Join(ModuleDirectory, "database.db");
         Logger.LogInformation("Loading database from {Path}", _dbPath);
+
+        RegisterListener<Listeners.OnTick>(OnTick);
+        RegisterListener<Listeners.OnMapStart>(OnMapStartHandler);
 
         // Ensure database and table exist using Migrations
         // Run in a separate thread to avoid blocking the main thread
@@ -51,23 +51,62 @@ public class StopSound : BasePlugin
             try
             {
                 await using var dbContext = new PluginDbContext(_dbPath);
-                await dbContext.Database.EnsureCreatedAsync(); // Use this line
+                await dbContext.Database.EnsureCreatedAsync();
                 Logger.LogInformation("Database schema ensured.");
             }
             catch (Exception ex)
             {
                 // Log any errors during migration
-                Logger.LogError(ex, "Error applying database migrations"); // Changed log message slightly
+                Logger.LogError(ex, "Error applying database migrations");
             }
         });
 
-        // --- Register Listeners ---
+
         // Listen for 'say' and 'say_team' commands to catch chat messages
         RegisterListener<Listeners.OnMapStart>(name => { /* Can do map specific things here */ });
         AddCommandListener("say", Listener_SayChat);          // Hook public chat
         AddCommandListener("say_team", Listener_SayChat);     // Hook team chat
     }
 
+    private void OnMapStartHandler(string mapName)
+    {
+        _gameRules = null; // used for menu flicker fix
+    }
+
+    /// <summary>
+    /// retrieves the game rules from the map. This is used to check if the round has restarted.
+    /// also nessesary for the menu flicker fix.
+    /// </summary>
+    private void InitializeGameRules()
+    {
+        var gameRulesProxy = Utilities.FindAllEntitiesByDesignerName<CCSGameRulesProxy>("cs_gamerules").FirstOrDefault();
+        _gameRules = gameRulesProxy?.GameRules;
+        Logger.LogInformation("GameRules initialized: {GameRules}", _gameRules != null ? "Yes" : "No");
+    }
+
+    /// <summary>
+    /// Checks if the round has restarted. This is used to check if the menu should be closed.
+    /// also nessesary for the menu flicker fix.
+    /// </summary>
+    private void OnTick()
+    {
+        if (_gameRules == null)
+        {
+            InitializeGameRules();
+        }
+        else
+        {
+            _gameRules.GameRestart = _gameRules.RestartRoundTime < Server.CurrentTime;
+        }
+    }
+
+
+    /// <summary>
+    /// Handles player connection events. This is where we add the player to the database if they don't exist.
+    /// </summary>
+    /// <param name="event"></param>
+    /// <param name="info"></param>
+    /// <returns></returns>
     [GameEventHandler] HookResult OnPlayerConnect(EventPlayerConnectFull @event, GameEventInfo info)
     {
         if (@event.Userid == null) return HookResult.Continue;
@@ -80,7 +119,7 @@ public class StopSound : BasePlugin
         {
             try
             {
-                // Create a DbContext instance for this operation
+
                 await using var dbContext = new PluginDbContext(_dbPath);
 
                 // Check if the player already exists in the database
@@ -95,7 +134,6 @@ public class StopSound : BasePlugin
             }
             catch (Exception ex)
             {
-                // It's CRUCIAL to log errors in background tasks
                 Logger.LogError(ex, "Error adding player to database for SteamID {SteamId}", steamId);
             }
         });
@@ -108,7 +146,9 @@ public class StopSound : BasePlugin
     {
         if (@event.Attacker == @event.Userid) return HookResult.Continue;
 
-        var steamId = @event.Attacker.AuthorizedSteamID?.SteamId64;
+        // We know @event.Attacker is not null here because of the 'if' check above.
+        // Use the null-forgiving operator (!) on @event.Attacker.
+        var steamId = @event.Attacker!.AuthorizedSteamID?.SteamId64;
         if (steamId == null) return HookResult.Continue;
 
         // Run in a separate thread
@@ -116,7 +156,6 @@ public class StopSound : BasePlugin
         {
             try
             {
-                // Create a DbContext instance for this operation
                 await using var dbContext = new PluginDbContext(_dbPath);
 
                 var playerRecord = await dbContext.Players.FindAsync(steamId.Value);
@@ -131,14 +170,12 @@ public class StopSound : BasePlugin
                 {
                     // Player exists, increment kills
                     playerRecord.Kills++;
-                    // No need for dbContext.Players.Update(playerRecord); EF Core tracks changes
                 }
 
-                await dbContext.SaveChangesAsync(); // Persist changes to the database
+                await dbContext.SaveChangesAsync();
             }
             catch (Exception ex)
             {
-                // It's CRUCIAL to log errors in background tasks
                 Logger.LogError(ex, "Error updating player kills for SteamID {SteamId}", steamId);
             }
         });
@@ -147,8 +184,12 @@ public class StopSound : BasePlugin
     }
 
 
-    
 
+    /// <summary>
+    /// get kills for a player using the console command.
+    /// </summary>
+    /// <param name="player"></param>
+    /// <param name="commandInfo"></param>
     [ConsoleCommand("css_kills", "Get count of kills for a player")]
     public void OnKillsCommand(CCSPlayerController? player, CommandInfo commandInfo)
     {
@@ -162,20 +203,19 @@ public class StopSound : BasePlugin
             int kills = 0;
             try
             {
-                // Create a DbContext instance for this operation
                 await using var dbContext = new PluginDbContext(_dbPath);
 
                 var playerRecord = await dbContext.Players
-                                            .AsNoTracking() // Use AsNoTracking for read-only queries for better performance
+                                            .AsNoTracking() // AsNoTracking for read-only queries for better performance
                                             .FirstOrDefaultAsync(p => p.SteamId == steamId);
 
                 kills = playerRecord?.Kills ?? 0;
             }
             catch (Exception ex)
             {
-                // It's CRUCIAL to log errors in background tasks
+
                 Logger.LogError(ex, "Error retrieving player kills for SteamID {SteamId}", steamId);
-                // Optionally inform the player about the error
+
                 Server.NextFrame(() => player.PrintToChat("Error retrieving kills data."));
                 return; // Exit the task
             }
@@ -186,7 +226,12 @@ public class StopSound : BasePlugin
         });
     }
 
-    // --- Updated Listener ---
+    /// <summary>
+    /// Listens for chat commands and opens the menu when the command is recognized.
+    /// </summary>
+    /// <param name="player"></param>
+    /// <param name="commandInfo"></param>
+    /// <returns></returns>
     private HookResult Listener_SayChat(CCSPlayerController? player, CommandInfo commandInfo)
     {
         if (player == null || !player.IsValid || player.IsBot)
@@ -194,58 +239,46 @@ public class StopSound : BasePlugin
             return HookResult.Continue;
         }
 
-        // Using GetArg is generally preferred now
         string? commandTrigger = (commandInfo.ArgCount > 1) ? commandInfo.GetArg(1)?.Trim() : null;
 
-        // Log received command attempt (optional, good for debug)
-        // Logger.LogInformation($"[ChatListener] Player: {player.PlayerName}, Arg1: '{commandTrigger}'");
+        // Logger.LogInformation($"[ChatListener] Player: {player.PlayerName}, Arg1: '{commandTrigger}'"); // Optional Debug log
 
         if (commandTrigger != null && commandTrigger.Equals("!menu", StringComparison.OrdinalIgnoreCase))
         {
-            Logger.LogInformation($"[ChatListener] '!menu' command attempt recognized for player {player.PlayerName}.");
+            Logger.LogInformation($"[ChatListener] '!menu' command attempt recognized for player {player.PlayerName}."); // Optional Debug log
 
-            // --- Check Cooldown ---
-            ulong steamId = player.SteamID; // Use SteamID which is reliable
-            if (_lastMenuOpenTime.TryGetValue(steamId, out DateTime lastOpen) && DateTime.UtcNow < lastOpen + _menuOpenCooldown)
-            {
-                Logger.LogInformation($"[Cooldown] Menu open throttled for player {player.PlayerName} (SteamID: {steamId}).");
-                // Return Handled to prevent the "!menu" text appearing if throttled.
-                return HookResult.Handled;
-            }
+            // --- Open the CenterHtmlMenu ---
+            OpenMainMenu(player);
 
-            // --- Update Last Open Time ---
-            _lastMenuOpenTime[steamId] = DateTime.UtcNow;
-            Logger.LogInformation($"[Cooldown] Updated last menu open time for player {player.PlayerName} (SteamID: {steamId}).");
-
-
-            // --- Open the Menu ---
-            OpenMainMenu(player); // Call your existing menu function
-
-            // --- VERY IMPORTANT: Stop the original chat command ---
-            // If we successfully handle '!menu', stop the "say" or "say_team" command
-            // from proceeding further (e.g., prevent showing "!menu" in chat).
+            // --- Stop the original chat command ---
             return HookResult.Handled;
         }
 
-        // If it wasn't our command, let the chat message proceed normally
         return HookResult.Continue;
     }
 
-    // --- Updated Method to Create and Open the Menu (No changes needed here for flicker) ---
+    /// <summary>
+    /// Opens the main menu for the player.
+    /// </summary>
+    /// <param name="player"></param>
     private void OpenMainMenu(CCSPlayerController player)
     {
         if (player == null || !player.IsValid) return;
 
-        var menu = new CenterHtmlMenu("Main Menu");
+        var menu = new CenterHtmlMenu("Main Menu", this);
         menu.AddMenuOption("Show My Kills", HandleMenuSelection);
-        menu.AddMenuOption("Placeholder Option 2", HandleMenuSelection);
-        menu.AddMenuOption("Close Menu", HandleMenuSelection);
+        //menu.AddMenuOption("Placeholder Option", HandleMenuSelection);
+
 
         MenuManager.OpenCenterHtmlMenu(this, player, menu);
         Logger.LogInformation($"[Menu] Opened main menu for {player.PlayerName}");
     }
 
-    // --- Menu Selection Handler (Remains the same - adding logging) ---
+    /// <summary>
+    /// Takes the selected menu option and performs the corresponding action.
+    /// </summary>
+    /// <param name="player"></param>
+    /// <param name="option"></param>
     private void HandleMenuSelection(CCSPlayerController player, ChatMenuOption option)
     {
         if (player == null || !player.IsValid) return;
@@ -264,10 +297,12 @@ public class StopSound : BasePlugin
         }
     }
 
-    // Other methods (Load, OnPlayerConnect, OnPlayerKilled, ShowPlayerKillsAsync, DBContext, etc.) remain the same...
 
-
-    // --- REFACTORED: Async Method to Get and Show Kills ---
+    /// <summary>
+    /// retrieves player kills from the database and prints it to the player.
+    /// </summary>
+    /// <param name="player"></param>
+    /// <returns></returns>
     private async Task ShowPlayerKillsAsync(CCSPlayerController player)
     {
         if (player == null || player.AuthorizedSteamID == null)
@@ -285,7 +320,7 @@ public class StopSound : BasePlugin
         {
             await using var dbContext = new PluginDbContext(_dbPath);
             var playerRecord = await dbContext.Players
-                                           .AsNoTracking() // Good for read-only
+                                           .AsNoTracking() // AsNoTracking for read-only queries for better performance
                                            .FirstOrDefaultAsync(p => p.SteamId == steamId);
             kills = playerRecord?.Kills ?? 0;
         }
