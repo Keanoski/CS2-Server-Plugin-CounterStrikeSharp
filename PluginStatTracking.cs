@@ -34,8 +34,8 @@ public class PluginStatTracking : BasePlugin
 
 
     private string _dbPath = null!;
-    private CCSGameRules? _gameRules; // used for menu flicker fix
-
+    private CCSGameRules? _gameRules; // used for menu flicker fix                                 
+    private string? _currentMapName; // Store the current map name
     public override void Load(bool hotReload)
     {
         _dbPath = Path.Join(ModuleDirectory, "database.db");
@@ -70,7 +70,43 @@ public class PluginStatTracking : BasePlugin
 
     private void OnMapStartHandler(string mapName)
     {
-        _gameRules = null; // used for menu flicker fix
+        _gameRules = null; // Reset if using for flicker fix
+        _currentMapName = mapName; // Store the new map name
+        Logger.LogInformation("Map changed to: {MapName}", _currentMapName);
+
+        // Clean up bot stats from previous maps in the background
+        _ = Task.Run(async () => await CleanUpOldBotStatsAsync(_currentMapName));
+    }
+
+    private async Task CleanUpOldBotStatsAsync(string currentMap)
+    {
+        if (string.IsNullOrEmpty(currentMap)) return;
+
+        try
+        {
+            Logger.LogInformation("Attempting to clear old bot stats (not matching '{CurrentMap}') from database...", currentMap);
+            await using var dbContext = new PluginDbContext(_dbPath);
+
+            // Find bot stats that are NOT from the current map
+            var oldBotStats = await dbContext.BotStats
+                .Where(b => b.MapName != currentMap)
+                .ToListAsync();
+
+            if (oldBotStats.Any())
+            {
+                dbContext.BotStats.RemoveRange(oldBotStats);
+                int count = await dbContext.SaveChangesAsync();
+                Logger.LogInformation("Cleared {Count} old bot stat records from database.", count);
+            }
+            else
+            {
+                Logger.LogInformation("No old bot stats found in database to clear.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Error clearing old bot stats from database.");
+        }
     }
 
     /// <summary>
@@ -142,47 +178,204 @@ public class PluginStatTracking : BasePlugin
         return HookResult.Continue;
     }
 
+    //[GameEventHandler]
+    //public HookResult OnPlayerKilled(EventPlayerDeath @event, GameEventInfo info)
+    //{
+    //    if (@event.Attacker == @event.Userid) return HookResult.Continue;
+
+    //    // We know @event.Attacker is not null here because of the 'if' check above.
+    //    // Use the null-forgiving operator (!) on @event.Attacker.
+    //    var steamId = @event.Attacker!.AuthorizedSteamID?.SteamId64;
+    //    var playerName = @event.Attacker.PlayerName;
+    //    if (steamId == null) return HookResult.Continue;
+
+    //    // Run in a separate thread
+    //    Task.Run(async () =>
+    //    {
+    //        try
+    //        {
+    //            await using var dbContext = new PluginDbContext(_dbPath);
+
+    //            var playerRecord = await dbContext.Players.FindAsync(steamId.Value);
+
+    //            if (playerRecord == null)
+    //            {
+    //                // Player doesn't exist, add new record
+    //                playerRecord = new PlayerRecord { SteamId = steamId.Value, PlayerName = playerName, Kills = 1 };
+    //                dbContext.Players.Add(playerRecord);
+    //            }
+    //            else
+    //            {
+    //                // Player exists, increment kills
+    //                playerRecord.Kills++;
+    //            }
+
+    //            await dbContext.SaveChangesAsync();
+    //        }
+    //        catch (Exception ex)
+    //        {
+    //            Logger.LogError(ex, "Error updating player kills for SteamID {SteamId}", steamId);
+    //        }
+    //    });
+
+    //    return HookResult.Continue;
+    //}
+
     [GameEventHandler]
     public HookResult OnPlayerKilled(EventPlayerDeath @event, GameEventInfo info)
     {
-        if (@event.Attacker == @event.Userid) return HookResult.Continue;
-
-        // We know @event.Attacker is not null here because of the 'if' check above.
-        // Use the null-forgiving operator (!) on @event.Attacker.
+        var attacker = @event.Attacker;
         var steamId = @event.Attacker!.AuthorizedSteamID?.SteamId64;
         var playerName = @event.Attacker.PlayerName;
-        if (steamId == null) return HookResult.Continue;
+        if (attacker == null || !attacker.IsValid || attacker == @event.Userid) return HookResult.Continue;
 
-        // Run in a separate thread
+        // --- Handle Bot Attacker ---
+        if (attacker.IsBot)
+        {
+            string botName = attacker.PlayerName ?? "Unknown Bot";
+            string? mapName = _currentMapName; // Use the stored map name
+
+            if (string.IsNullOrEmpty(mapName))
+            {
+                Logger.LogWarning("Current map name not set, cannot record bot kill for {BotName}", botName);
+                return HookResult.Continue; // Or handle differently
+            }
+
+            // Run DB update in background
+            Task.Run(async () =>
+            {
+                try
+                {
+                    await using var dbContext = new PluginDbContext(_dbPath);
+
+                    // Find bot record for this specific name on this specific map
+                    var botRecord = await dbContext.BotStats
+                        .FirstOrDefaultAsync(b => b.BotName == botName && b.MapName == mapName);
+
+                    if (botRecord == null)
+                    {
+                        // First kill for this bot name on this map
+                        botRecord = new BotRecord
+                        {
+                            BotName = botName,
+                            Kills = 1,
+                            MapName = mapName,
+                            LastUpdated = DateTime.UtcNow
+                        };
+                        dbContext.BotStats.Add(botRecord);
+                        // Logger.LogInformation("Added new bot record for {BotName} on map {MapName}", botName, mapName);
+                    }
+                    else
+                    {
+                        // Bot record exists, increment kills
+                        botRecord.Kills++;
+                        botRecord.LastUpdated = DateTime.UtcNow;
+                    }
+                    await dbContext.SaveChangesAsync();
+                }
+                catch (Exception ex)
+                {
+                    Logger.LogError(ex, "Error updating bot stats for Bot '{BotName}' on map {MapName}", botName, mapName);
+                }
+            });
+            // Continue processing (e.g., player attacker logic) if needed
+        }
+        // --- Handle Player Attacker (Keep existing logic) ---
+        else if (attacker.AuthorizedSteamID != null)
+        {
+            
+            Task.Run(async () => {
+            try
+                {
+                    await using var dbContext = new PluginDbContext(_dbPath);
+
+                    var playerRecord = await dbContext.Players.FindAsync(steamId);
+
+                    if (playerRecord == null)
+                    {
+                        // Player doesn't exist, add new record
+                        playerRecord = new PlayerRecord { SteamId = (ulong)steamId, PlayerName = playerName, Kills = 1 };
+                        dbContext.Players.Add(playerRecord);
+                    }
+                    else
+                    {
+                        // Player exists, increment kills
+                        playerRecord.Kills++;
+                    }
+
+                    await dbContext.SaveChangesAsync();
+                }
+                catch (Exception ex)
+                {
+                    Logger.LogError(ex, "Error updating player kills for SteamID {SteamId}", steamId);
+                }
+            });
+        }
+
+        return HookResult.Continue;
+    }
+
+    [ConsoleCommand("css_botkills", "Shows kill counts for bots on the current map from DB.")]
+    [CommandHelper(whoCanExecute: CommandUsage.CLIENT_AND_SERVER)]
+    public void OnBotKillsCommand(CCSPlayerController? caller, CommandInfo commandInfo)
+    {
+        string? mapName = _currentMapName; // Get current map name
+
+        if (string.IsNullOrEmpty(mapName))
+        {
+            ReplyToCommand(caller, "Current map name not available to query bot stats.");
+            return;
+        }
+
+        // Query DB in background, reply on main thread
         Task.Run(async () =>
         {
+            List<BotRecord> botRecords = new List<BotRecord>();
+            bool dbError = false;
             try
             {
                 await using var dbContext = new PluginDbContext(_dbPath);
-
-                var playerRecord = await dbContext.Players.FindAsync(steamId.Value);
-
-                if (playerRecord == null)
-                {
-                    // Player doesn't exist, add new record
-                    playerRecord = new PlayerRecord { SteamId = steamId.Value, PlayerName = playerName, Kills = 1 };
-                    dbContext.Players.Add(playerRecord);
-                }
-                else
-                {
-                    // Player exists, increment kills
-                    playerRecord.Kills++;
-                }
-
-                await dbContext.SaveChangesAsync();
+                botRecords = await dbContext.BotStats
+                    .Where(b => b.MapName == mapName) // Filter by current map
+                    .OrderByDescending(b => b.Kills)
+                    .ToListAsync();
             }
             catch (Exception ex)
             {
-                Logger.LogError(ex, "Error updating player kills for SteamID {SteamId}", steamId);
+                Logger.LogError(ex, "Error retrieving bot stats from database for map {MapName}", mapName);
+                dbError = true;
             }
-        });
 
-        return HookResult.Continue;
+            // Reply on the main thread
+            Server.NextFrame(() =>
+            {
+                if (dbError)
+                {
+                    ReplyToCommand(caller, "Error retrieving bot stats from database.");
+                    return;
+                }
+
+                if (!botRecords.Any())
+                {
+                    ReplyToCommand(caller, $"No bot stats recorded in DB for current map ({mapName}).");
+                    return;
+                }
+
+                ReplyToCommand(caller, $"--- Bot Kills on {mapName} (from DB) ---");
+                foreach (var botRecord in botRecords)
+                {
+                    ReplyToCommand(caller, $"{botRecord.BotName}: {botRecord.Kills} Kills");
+                }
+                ReplyToCommand(caller, "--------------------------------------");
+            });
+        });
+    }
+
+    // Keep your ReplyToCommand helper function
+    private void ReplyToCommand(CCSPlayerController? caller, string message)
+    {
+        if (caller == null) { Console.WriteLine(message); }
+        else { caller.PrintToChat(message); }
     }
 
 
