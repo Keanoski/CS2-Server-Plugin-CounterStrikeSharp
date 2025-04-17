@@ -4,12 +4,12 @@ using System.ComponentModel.DataAnnotations.Schema;
 [Table("players")] 
 public class PlayerRecord
 {
-    [Key] // Marks steamid as the primary key
-    [Column("steamid")] // Maps property to the specific column name
+    [Key] 
+    [Column("steamid")] 
     [DatabaseGenerated(DatabaseGeneratedOption.None)] // Important for non-auto-incrementing keys
     public ulong SteamId { get; set; }
 
-    [Column("playername")] // Maps property to the specific column name
+    [Column("playername")] 
     public string? PlayerName { get; set; }
 
     [Column("kills")]
