@@ -21,21 +21,16 @@ namespace PluginStatTracking;
 [MinimumApiVersion(80)]
 
 public class PluginStatTracking : BasePlugin
-
 {
-
     public override string ModuleName => "Example: With Database EFCore";
-
     public override string ModuleVersion => "1.0.0";
-
     public override string ModuleAuthor => "CounterStrikeSharp & Contributors";
-
     public override string ModuleDescription => "A plugin that reads and writes from the database.";
-
 
     private string _dbPath = null!;
     private CCSGameRules? _gameRules; // used for menu flicker fix                                 
     private string? _currentMapName; // Store the current map name
+
     public override void Load(bool hotReload)
     {
         _dbPath = Path.Join(ModuleDirectory, "database.db");
@@ -68,6 +63,10 @@ public class PluginStatTracking : BasePlugin
         AddCommandListener("say_team", Listener_SayChat);     // Hook team chat
     }
 
+    /// <summary>
+    /// On map start, reset the game rules and store the current map name.
+    /// </summary>
+    /// <param name="mapName"></param>
     private void OnMapStartHandler(string mapName)
     {
         _gameRules = null; // Reset if using for flicker fix
@@ -78,6 +77,11 @@ public class PluginStatTracking : BasePlugin
         _ = Task.Run(async () => await CleanUpOldBotStatsAsync(_currentMapName));
     }
 
+    /// <summary>
+    /// Cleans up old bot stats from the database that do not match the current map.
+    /// </summary>
+    /// <param name="currentMap"></param>
+    /// <returns></returns>
     private async Task CleanUpOldBotStatsAsync(string currentMap)
     {
         if (string.IsNullOrEmpty(currentMap)) return;
@@ -121,7 +125,6 @@ public class PluginStatTracking : BasePlugin
     }
 
     /// <summary>
-    /// Checks if the round has restarted. This is used to check if the menu should be closed.
     /// also nessesary for the menu flicker fix.
     /// </summary>
     private void OnTick()
@@ -221,6 +224,13 @@ public class PluginStatTracking : BasePlugin
     //    return HookResult.Continue;
     //}
 
+
+    /// <summary>
+    /// Handles player kill events. This is where we update the kills for the player and the bot.
+    /// </summary>
+    /// <param name="event"></param>
+    /// <param name="info"></param>
+    /// <returns></returns>
     [GameEventHandler]
     public HookResult OnPlayerKilled(EventPlayerDeath @event, GameEventInfo info)
     {
@@ -233,12 +243,12 @@ public class PluginStatTracking : BasePlugin
         if (attacker.IsBot)
         {
             string botName = attacker.PlayerName ?? "Unknown Bot";
-            string? mapName = _currentMapName; // Use the stored map name
+            string? mapName = _currentMapName;
 
             if (string.IsNullOrEmpty(mapName))
             {
                 Logger.LogWarning("Current map name not set, cannot record bot kill for {BotName}", botName);
-                return HookResult.Continue; // Or handle differently
+                return HookResult.Continue;
             }
 
             // Run DB update in background
@@ -263,7 +273,7 @@ public class PluginStatTracking : BasePlugin
                             LastUpdated = DateTime.UtcNow
                         };
                         dbContext.BotStats.Add(botRecord);
-                        // Logger.LogInformation("Added new bot record for {BotName} on map {MapName}", botName, mapName);
+                        Logger.LogInformation("Added new bot record for {BotName} on map {MapName}", botName, mapName);
                     }
                     else
                     {
@@ -278,9 +288,8 @@ public class PluginStatTracking : BasePlugin
                     Logger.LogError(ex, "Error updating bot stats for Bot '{BotName}' on map {MapName}", botName, mapName);
                 }
             });
-            // Continue processing (e.g., player attacker logic) if needed
         }
-        // --- Handle Player Attacker (Keep existing logic) ---
+
         else if (attacker.AuthorizedSteamID != null)
         {
             
@@ -315,11 +324,16 @@ public class PluginStatTracking : BasePlugin
         return HookResult.Continue;
     }
 
+    /// <summary>
+    /// Displays the bot kill counts for the current map from the database.
+    /// </summary>
+    /// <param name="caller"></param>
+    /// <param name="commandInfo"></param>
     [ConsoleCommand("css_botkills", "Shows kill counts for bots on the current map from DB.")]
     [CommandHelper(whoCanExecute: CommandUsage.CLIENT_AND_SERVER)]
     public void OnBotKillsCommand(CCSPlayerController? caller, CommandInfo commandInfo)
     {
-        string? mapName = _currentMapName; // Get current map name
+        string? mapName = _currentMapName;
 
         if (string.IsNullOrEmpty(mapName))
         {
@@ -371,13 +385,16 @@ public class PluginStatTracking : BasePlugin
         });
     }
 
-    // Keep your ReplyToCommand helper function
+    /// <summary>
+    ///  prints a message to the console or to the player, depending on if the caller is null.
+    /// </summary>
+    /// <param name="caller"></param>
+    /// <param name="message"></param>
     private void ReplyToCommand(CCSPlayerController? caller, string message)
     {
         if (caller == null) { Console.WriteLine(message); }
         else { caller.PrintToChat(message); }
     }
-
 
 
     /// <summary>
@@ -436,16 +453,15 @@ public class PluginStatTracking : BasePlugin
 
         string? commandTrigger = (commandInfo.ArgCount > 1) ? commandInfo.GetArg(1)?.Trim() : null;
 
-        // Logger.LogInformation($"[ChatListener] Player: {player.PlayerName}, Arg1: '{commandTrigger}'"); // Optional Debug log
+           Logger.LogInformation($"[ChatListener] Player: {player.PlayerName}, Arg1: '{commandTrigger}'"); 
 
         if (commandTrigger != null && commandTrigger.Equals("!menu", StringComparison.OrdinalIgnoreCase))
         {
-            Logger.LogInformation($"[ChatListener] '!menu' command attempt recognized for player {player.PlayerName}."); // Optional Debug log
+            Logger.LogInformation($"[ChatListener] '!menu' command attempt recognized for player {player.PlayerName}."); 
 
-            // --- Open the CenterHtmlMenu ---
+
             OpenMainMenu(player);
 
-            // --- Stop the original chat command ---
             return HookResult.Handled;
         }
 
