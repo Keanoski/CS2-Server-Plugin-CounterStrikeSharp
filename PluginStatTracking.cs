@@ -12,14 +12,9 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using static CounterStrikeSharp.API.Core.Listeners;
 
-
-
 namespace PluginStatTracking;
 
-
-
 [MinimumApiVersion(80)]
-
 public class PluginStatTracking : BasePlugin
 {
     public override string ModuleName => "Example: With Database EFCore";
